@@ -64,55 +64,79 @@ class Voxels {
     values_.at(x + w * (y + h * z)) = std::move(v);
   }
 
+  template <typename Fn>
+  void march(const Point& from, const Ray& direction, Fn&& fn);
+
  private:
   std::array<int, 3> shape_;
   std::vector<Value> values_;
 };
 
+template <typename Value>
 template <typename Fn>
-void march(const Point& from, const Ray& direction, Fn&& fn) {
-  auto [x, y, z] = from;
-  auto [u, v, w] = direction;
+void Voxels<Value>::march(const Point& from, const Ray& direction, Fn&& fn) {
+  const auto [x, y, z] = from;
+  const auto [r, s, t] = direction;
+  const auto [w, h, d] = shape_;
 
   // The signs of the ray direction vector components.
-  auto sx = std::signbit(u);
-  auto sy = std::signbit(v);
-  auto sz = std::signbit(w);
+  auto sx = std::signbit(r) ? -1 : 1;
+  auto sy = std::signbit(s) ? -1 : 1;
+  auto sz = std::signbit(t) ? -1 : 1;
 
   // The ray distance traveled per unit in each direction.
-  auto norm = std::sqrt(u * u + v * v + w * w);
-  auto dx = norm / std::abs(u);
-  auto dy = norm / std::abs(v);
-  auto dz = norm / std::abs(w);
+  auto norm = std::sqrt(r * r + s * s + t * t);
+  auto dx = norm / std::abs(r);
+  auto dy = norm / std::abs(s);
+  auto dz = norm / std::abs(t);
 
   // The ray distance to the next intersection in each direction.
-  auto lx = (sx ? (x - std::floor(x)) : (1 + std::floor(x) - x)) * dx;
-  auto ly = (sy ? (y - std::floor(y)) : (1 + std::floor(y) - y)) * dy;
-  auto lz = (sz ? (z - std::floor(z)) : (1 + std::floor(z) - z)) * dz;
+  auto lx = (sx == -1 ? (x - std::floor(x)) : (1 + std::floor(x) - x)) * dx;
+  auto ly = (sy == -1 ? (y - std::floor(y)) : (1 + std::floor(y) - y)) * dy;
+  auto lz = (sz == -1 ? (z - std::floor(z)) : (1 + std::floor(z) - z)) * dz;
 
   // Advance voxel indices that intersect with the given ray.
   float distance = 0.0;
-  int ix = static_cast<int>(x);
-  int iy = static_cast<int>(y);
-  int iz = static_cast<int>(z);
+  auto ix = static_cast<int>(x);
+  auto iy = static_cast<int>(y);
+  auto iz = static_cast<int>(z);
+  const auto tx = sx;
+  const auto ty = w * sy;
+  const auto tz = w * h * sz;
+  const auto bx = sx == -1 ? -1 : w;
+  const auto by = sy == -1 ? -1 : h;
+  const auto bz = sz == -1 ? -1 : d;
+  auto index = ix + w * (iy + h * iz);
   for (;;) {
-    if (!fn(ix, iy, iz, distance)) {
+    if (!fn(values_.at(index), distance)) {
       break;
     }
 
     // Advance one voxel in the direction of nearest intersection.
     if (lx <= ly && lx <= lz) {
-      distance = lx;
-      ix += sx ? -1 : 1;
+      ix += sx;
+      if (ix == bx) {
+        break;
+      }
       lx += dx;
+      index += tx;
+      distance = lx;
     } else if (ly <= lz) {
-      distance = ly;
-      iy += sy ? -1 : 1;
+      iy += sy;
+      if (iy == by) {
+        break;
+      }
       ly += dy;
+      index += ty;
+      distance = ly;
     } else {
-      distance = lz;
-      iz += sz ? -1 : 1;
+      iz += sz;
+      if (iz == bz) {
+        break;
+      }
       lz += dz;
+      index += tz;
+      distance = lz;
     }
   }
 }
@@ -171,6 +195,7 @@ int main() {
 
   // Cast a ray through each pixel to identify its color.
   std::vector<Ray> rays;
+  rays.reserve(kPixelsSize * kPixelsSize);
   {
     Timer timer("prepare_rays");
     for (int i = 0; i < kPixelsSize; i += 1) {
@@ -194,17 +219,11 @@ int main() {
     std::iota(j_range.begin(), j_range.end(), 0);
     parallel_for(j_range.begin(), j_range.end(), [&](int j) {
       for (int i = 0; i < kPixelsSize; i += 1) {
-        march(
+        voxels.march(
             camera.position,
-            rays.at(i + kPixelsSize * j),
-            [&](int ix, int iy, int iz, float distance) {
-              if (ix < 0 || iy < 0 || iz < 0) {
-                return false;
-              }
-              if (ix >= kVoxelsSize || iy >= kVoxelsSize || iz >= kVoxelsSize) {
-                return false;
-              }
-              if (auto mat = voxels.get(ix, iy, iz)) {
+            rays[i + kPixelsSize * j],
+            [&](int32_t mat, float distance) {
+              if (mat) {
                 pixels.set(i, j, kMaterials.at(mat - 1).color);
                 return false;
               }
